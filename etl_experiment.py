@@ -122,6 +122,39 @@ class EtlExperiment:
         gc_layout = self.load_layout_file(minio_bucket_name, path_to_layout_files + 'growth_condition_layout.csv')
         return transfer_layout, rep_layout, strain_layout, gc_layout
 
+    @staticmethod
+    def get_transfers(batch_dict, batch, plate, transfer):
+        # Which transfer since beginning of experiment?
+        return batch_dict[batch] + (plate - 1) * 3 + transfer
+
+    @staticmethod
+    def get_plates(batch_dict, batch, plate):
+        # How many plates in total?
+        return batch_dict[batch] + plate
+
+    @staticmethod
+    def get_parent_plate(plate, column):
+        # Which plate was the parent sample on?
+        if column in (1, 4, 7):
+            parent_plate = plate - 1
+        else:
+            parent_plate = plate
+        return parent_plate
+
+    @staticmethod
+    def get_parent_col(col):
+        # Which column was the parent sample in?
+        cols = (1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11)
+        parent_cols = (3, 1, 2, 6, 4, 5, 9, 7, 8, 0, 0, 0)
+        parent_col_dict = dict(zip(cols, parent_cols))
+        return parent_col_dict[col]
+
+    @staticmethod
+    def get_well_name(row, col):
+        # Return well name based on plate rows/cols.
+        well_name = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'][row] + str(col + 1)
+        return well_name
+
     def etl_plate(self, plate_data: DataFrame, plate_parameters: AddPlateParameters, start_date,
                   exp_id, exp_index, minio_bucket_name='synbio'):
         """
@@ -135,144 +168,36 @@ class EtlExperiment:
 
         transfer_layout, rep_layout, strain_layout, gc_layout = self.load_layout(minio_bucket_name,
                                                                                  plate_parameters.layout)
-        
-        def get_transfers(batch_dict, batch, plate, transfer):
-            # Which transfer since beginning of experiment?
-            return batch_dict[batch] + (plate-1)*3 + (transfer)
-        
-        
-        def get_plates(batch_dict, batch, plate):
-            # How many plates in total?
-            return batch_dict[batch] + plate
-        
-        
-        def get_parent_plate(plate, column):
-            # Which plate was the parent sample on?
-            if column in (1, 4, 7):
-                parent_plate = plate-1
-            else:
-                parent_plate = plate
-            return parent_plate
-        
-        
-        def get_parent_col(col):
-            # Which column was the parent sample in?
-            cols = (1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 10, 11)
-            parent_cols = (3, 1, 2, 6, 4, 5, 9, 7, 8, 0, 0, 0)
-            parent_col_dict = dict(zip(cols, parent_cols))
-            return parent_col_dict[col]
-        
-        
-        def get_well_name(row, col):
-            # Return well name based on plate rows/cols.
-            well_name = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'][row] + str(col+1)
-            return well_name
-        
-        
-        # Hardcoded variables. 
-        # Later, these things should be supplied when the experimental team 
-        # registers the experiment through the web UI.
-        minio_bucket_name = 'synbio'
-        path_to_plate_reader_files = 'ALE1b_OD_data/'
-        path_to_layout_files = 'plate_layouts/'
-        fname_pattern = re.compile(
-            r'(?P<experiment>\w+)_(?P<timestamp>\d+)_(?P<uniqueID>\w+)_(?P<plate>\d+)_(?P<transfer>[1-3])_(?P<timepoint>\d+).txt'
-            )
-        experiment_id = path_to_plate_reader_files.split('_')[0]
-        plate_type = '96_shallow' # could also be deep well plate
-        start_date = '2025-04-04'
-        exp_index = 1
-        exp_type = 'autoALE'
-        description = ''
-        protocol_id = 'mock_1b_protocol'
-        lab_id = 1
-        contact_id = 1
-        operation_id = f"{experiment_id}_operation"
-        measurement_type = 'growth'
-        plate_reader_filenames = self.get_plate_reader_filenames(minio_bucket_name,
-                                                                 path_to_plate_reader_files,
-                                                                 fname_pattern)
-        transfer_layout = read_mio_csv(
-            mio, minio_bucket_name, path_to_layout_files + 'transfer_layout.csv'
-            )
-        rep_layout = read_mio_csv(
-            mio, minio_bucket_name, path_to_layout_files + 'replicate_layout.csv'
-            )
-        strain_layout = read_mio_csv(
-            mio, minio_bucket_name, path_to_layout_files + 'strain_layout.csv'
-            )
-        gc_layout = read_mio_csv(
-            mio, minio_bucket_name, path_to_layout_files + 'growth_condition_layout.csv'
-            )
-        
-        
-        # Upload this experiment and its operation (i.e., procedure) to the db.
-        operation_dict = {
-            'id': [operation_id],
-            'protocol_id': [protocol_id],
-            'lab_id': [lab_id],
-            'contact_id': [contact_id],
-            'timestamp': [start_date]
-        }
-        exp_operation_df = pd.DataFrame.from_dict(operation_dict)
-        exp_operation_df.to_sql('operation', engine, index=False, if_exists='append')
-        
-        exp_dict = {
-            'id': [experiment_id],
-            'type': [exp_type],
-            'start_date': [start_date],
-            'index': [exp_index],
-            'description': [description],
-            'operation_id': [operation_id]
-        }
-        new_exp_df = pd.DataFrame.from_dict(exp_dict)
-        new_exp_df.to_sql('experiment', engine, index=False, if_exists='append')
+
+        #plate_reader_filenames = self.get_plate_reader_filenames(minio_bucket_name,
+        #                                                         path_to_plate_reader_files,
+        #                                                         fname_pattern)
         
         # Initialize data df
         data = pd.DataFrame()
-        
-        # Read info from plate reader file names and file content into df
-        for f in plate_reader_filenames:
-        
-            try:
-        
-                # Initialize row in dataframe
-                data_row = {}
-                match = fname_pattern.match(f)
-        
-                # Parse info contained in plate reader file name
-                data_row['experiment'] = str(match.group('experiment'))
-                data_row['file_ID'] = str(match.group('uniqueID'))
-                data_row['timestamp'] = int(match.group('timestamp'))
-                data_row['plate_index'] = int(match.group('plate'))
-                # t_transfer indicates which plate cols were most recently innoculated.
-                data_row['t_transfer'] = int(match.group('transfer'))
-        
-                # Read plate reader files into dataframe
-                response = mio.get_object(
-                    minio_bucket_name, path_to_plate_reader_files+f
-                    )
-                csv_data = response.data
-                plate_data = pd.read_csv(io.BytesIO(csv_data), header=None)
-                for row in range(8):
-                    for col in range(12):
-                        data_row['row'] = row
-                        data_row['column'] = col
-                        data_row['OD'] = plate_data.iloc[row, col]
-                        data = pd.concat([data, pd.Series(data_row).to_frame().T])
-                        
-            except Exception as e:
-                print(f"Error: {e}")
-                
-            finally: 
-                response.close()
-                response.release_conn()
+
+        # Parse info contained in plate reader file name
+        data_row = {}
+        data_row['file_ID'] = plate_parameters.id
+        data_row['timestamp'] = plate_parameters.timestamp
+        data_row['datetime'] = datetime.fromtimestamp(data_row['timestamp']).isoformat()
+        data_row['plate_index'] = plate_parameters.index
+        # t_transfer indicates which plate cols were most recently innoculated.
+        data_row['t_transfer'] = plate_parameters.transfer
+
+        # Read plate reader files into dataframe
+        for row in range(8):
+            for col in range(12):
+                data_row['row'] = row
+                data_row['column'] = col
+                data_row['OD'] = plate_data.iloc[row, col]
+                data = pd.concat([data, pd.Series(data_row).to_frame().T])
         
         data.reset_index(inplace=True, drop=True)
         
         # Translate row and column numbers to well names
         data['well'] = data.apply(
-            lambda x: get_well_name(x['row'], x['column']), axis=1
+            lambda x: self.get_well_name(x['row'], x['column']), axis=1
             )
         # Translate timestamp into isoformat time
         data['datetime'] = data['timestamp'].apply(
@@ -280,14 +205,15 @@ class EtlExperiment:
             )
         
         # Appending metadata
-        data['filename'] = path_to_plate_reader_files
-        data['measurement_type'] = measurement_type
-        data['experiment'] = experiment_id
-        data['plate_type'] = plate_type
+        # data['filename'] = path_to_plate_reader_files
+        data['measurement_type'] = plate_parameters.measurement_type
+        data['experiment'] = exp_id
+        data['plate_type'] = plate_parameters.type
         data['start_date'] = start_date
         data['exp_index'] = exp_index
-        data['operation_id'] = operation_id
-        data['layout_filename'] = path_to_layout_files 
+        data['operation_id'] = plate_parameters.operation_id
+        data['layout_filename'] = plate_parameters.layout
+        
         # Given location on plate (row, col) and layout files, get the strain, 
         # growth condition, replicate number, and transfer_l for each well.
         # (transfer_l indicates transfer based on plate location.)
@@ -365,12 +291,12 @@ class EtlExperiment:
         data['cum_transfer'] = np.where(
             data['transfer']==0, np.array([0]*len(data)), 
             data.apply(
-                lambda x: get_transfers(
+                lambda x: self.get_transfers(
                     batch_dict_t, x['file_ID'], x['plate_index'], x['transfer']
                     ), axis=1)
                     ) 
         data['cum_plate'] = data.apply(
-            lambda x: get_plates(
+            lambda x: self.get_plates(
                 batch_dict_p, x['file_ID'], x['plate_index']
                 ), axis=1
                 )
@@ -415,14 +341,14 @@ class EtlExperiment:
         data.loc[
             ~pd.isna(data['strain']) & (data['cum_transfer'] != 1),
             'parent_plate'] = data.apply(
-                lambda x: get_parent_plate(
+                lambda x: self.get_parent_plate(
                     x['cum_plate'], x['column']
                     ), axis=1)
         data['parent_well'] = pd.NA
         data.loc[
             ~pd.isna(data['strain']) & (data['cum_transfer'] != 1),
             'parent_well'] = data.apply(
-                lambda x: get_well_name(x['row'], get_parent_col(x['column'])), axis=1)
+                lambda x: self.get_well_name(x['row'], self.get_parent_col(x['column'])), axis=1)
         
         # Assign plate, well, and sample names
         data = data.convert_dtypes()
@@ -460,7 +386,7 @@ class EtlExperiment:
         plates.rename(
             columns={'plate_name': 'id', 'experiment': 'experiment_id'}, inplace=True
             )
-        plates.to_sql('plate', engine, index=False, if_exists='append')
+        plates.to_sql('plate', self.engine, index=False, if_exists='append')
         
         # 2) Samples and associated measurements
         # Each sample has a measurement of type 'growth' to which all od_measurements map.
@@ -481,7 +407,7 @@ class EtlExperiment:
                 'gc': 'growth_condition_id', 'strain': 'strain_id',
                 'parent_id': 'parent_sample_name'
                 }, inplace=True)
-        samples.to_sql('sample', engine, index=False, if_exists='append')
+        samples.to_sql('sample', self.engine, index=False, if_exists='append')
         measurements = sample_meas[
             ['sample_name', 'operation_id', 'measurement_type', 'filename']
             ].copy()
@@ -489,7 +415,7 @@ class EtlExperiment:
             columns={'sample_name': 'sample_id', 'measurement_type': 'type'},
             inplace=True
             )
-        measurements.to_sql('measurement', engine, index=False, if_exists='append')
+        measurements.to_sql('measurement', self.engine, index=False, if_exists='append')
         
         # 3) OD_measurements
         # The index of the db table `measurements` autoincrements, so the measurement
@@ -499,14 +425,14 @@ class EtlExperiment:
         sample_names = tuple(sample_meas['sample_name'])
         meas_from_db = pd.read_sql(
             f"SELECT `id`, `sample_id` FROM `measurement` WHERE `sample_id` IN {sample_names};",
-            engine
+            self.engine
             ).rename(columns={'id': 'measurement_id'})
         od_meas = meas_from_db.merge(
             data, left_on='sample_id', right_on='sample_name', how='inner'
             )[['plate_name', 'measurement_id', 'datetime', 'OD', 'background']].rename(
                 columns={'OD': 'od'}
                 )
-        od_meas.drop('plate_name', axis=1).to_sql('od_measurement', engine, index=False, if_exists='append')
+        od_meas.drop('plate_name', axis=1).to_sql('od_measurement', self.engine, index=False, if_exists='append')
     
         
         # 4) Generate growth curves with AMiGA code and store in db   
@@ -613,5 +539,5 @@ class EtlExperiment:
             metrics_all['growth_rate']
         )
         
-        metrics_all.to_sql('growth_measurement', engine, index=False, if_exists='append')
+        metrics_all.to_sql('growth_measurement', self.engine, index=False, if_exists='append')
 
